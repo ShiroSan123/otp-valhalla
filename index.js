@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 
 dotenv.config();
+// ы
 
 const app = express();
 const port = process.env.OTP_SERVER_PORT || 4000;
