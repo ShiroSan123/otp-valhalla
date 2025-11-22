@@ -56,6 +56,10 @@ const supabaseAdmin =
 		: null;
 
 const requestStore = new Map();
+const UUID_REGEX =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DEFAULT_PROFILE_REGION = 'xxxxxxxxx';
+const DEFAULT_PROFILE_CATEGORY = 'pensioner';
 
 function escapeHtml(value) {
 	return String(value ?? '')
@@ -300,6 +304,122 @@ async function findSupabaseUserByPhone(phone) {
 	}
 
 	return null;
+}
+
+async function fetchProfileRecord(authUserId) {
+	if (!supabaseAdmin) {
+		throw new Error('Supabase is not configured');
+	}
+
+	if (!authUserId) {
+		return null;
+	}
+
+	const { data, error } = await supabaseAdmin
+		.from('profiles')
+		.select('*')
+		.eq('auth_user_id', authUserId)
+		.maybeSingle();
+
+	if (error) {
+		throw error;
+	}
+
+	return data ?? null;
+}
+
+function buildProfileInsertPayload(input) {
+	return {
+		auth_user_id: input.authUserId,
+		full_name: input.fullName ?? 'Пользователь',
+		email: input.email ?? null,
+		phone: input.phone ?? null,
+		region: DEFAULT_PROFILE_REGION,
+		category: DEFAULT_PROFILE_CATEGORY,
+		role: 'self',
+		interests: [],
+		simple_mode_enabled: true,
+	};
+}
+
+function buildProfileUpdatePayload(input = {}) {
+	const payload = {};
+	if ('fullName' in input) payload.full_name = input.fullName ?? null;
+	if ('email' in input) payload.email = input.email ?? null;
+	if ('phone' in input) payload.phone = input.phone ?? null;
+	if ('region' in input) payload.region = input.region ?? DEFAULT_PROFILE_REGION;
+	if ('category' in input) payload.category = input.category ?? DEFAULT_PROFILE_CATEGORY;
+	if ('snils' in input) payload.snils = input.snils ?? null;
+	if ('role' in input) payload.role = input.role ?? 'self';
+	if ('interests' in input)
+		payload.interests = Array.isArray(input.interests) ? input.interests : [];
+	if ('simpleModeEnabled' in input)
+		payload.simple_mode_enabled = Boolean(input.simpleModeEnabled);
+	return payload;
+}
+
+async function ensureProfileRecord(input) {
+	if (!supabaseAdmin) {
+		throw new Error('Supabase is not configured');
+	}
+
+	const existing = await fetchProfileRecord(input.authUserId);
+	if (existing) {
+		return existing;
+	}
+
+	const payload = buildProfileInsertPayload(input);
+
+	const { data, error } = await supabaseAdmin
+		.from('profiles')
+		.insert(payload)
+		.select('*')
+		.single();
+
+	if (error) {
+		throw error;
+	}
+
+	return data;
+}
+
+async function updateProfileRecord(authUserId, input) {
+	if (!supabaseAdmin) {
+		throw new Error('Supabase is not configured');
+	}
+
+	const payload = buildProfileUpdatePayload(input);
+	if (Object.keys(payload).length === 0) {
+		return fetchProfileRecord(authUserId);
+	}
+
+	const { data, error } = await supabaseAdmin
+		.from('profiles')
+		.update(payload)
+		.eq('auth_user_id', authUserId)
+		.select('*')
+		.single();
+
+	if (error) {
+		throw error;
+	}
+
+	return data;
+}
+
+async function deleteProfileRecord(authUserId) {
+	if (!supabaseAdmin) {
+		throw new Error('Supabase is not configured');
+	}
+
+	const { error } = await supabaseAdmin
+		.from('profiles')
+		.delete()
+		.eq('auth_user_id', authUserId);
+
+	if (error) {
+		throw error;
+	}
 }
 
 
@@ -1112,6 +1232,68 @@ app.get('/otp/requests', async (req, res) => {
 	} catch (error) {
 		console.error('Load OTP requests error:', error);
 		return res.status(500).json({ message: 'Failed to load OTP requests' });
+	}
+});
+
+app.post('/profiles/ensure', async (req, res) => {
+	if (!supabaseAdmin) {
+		return res.status(500).json({ message: 'Supabase is not configured' });
+	}
+
+	const { authUserId, fullName, email, phone } = req.body ?? {};
+	if (!authUserId || !UUID_REGEX.test(authUserId)) {
+		return res.status(400).json({ message: 'Valid authUserId is required' });
+	}
+
+	try {
+		const profile = await ensureProfileRecord({
+			authUserId,
+			fullName,
+			email,
+			phone,
+		});
+		return res.json({ profile });
+	} catch (error) {
+		console.error('Profiles ensure error:', error);
+		return res.status(500).json({ message: 'Failed to ensure profile' });
+	}
+});
+
+app.put('/profiles/:authUserId', async (req, res) => {
+	if (!supabaseAdmin) {
+		return res.status(500).json({ message: 'Supabase is not configured' });
+	}
+
+	const { authUserId } = req.params;
+	if (!authUserId || !UUID_REGEX.test(authUserId)) {
+		return res.status(400).json({ message: 'Valid authUserId is required' });
+	}
+
+	try {
+		const profile = await updateProfileRecord(authUserId, req.body ?? {});
+		return res.json({ profile });
+	} catch (error) {
+		console.error('Profiles update error:', error);
+		return res.status(500).json({ message: 'Failed to update profile' });
+	}
+});
+
+app.delete('/profiles/:authUserId', async (req, res) => {
+	if (!supabaseAdmin) {
+		return res.status(500).json({ message: 'Supabase is not configured' });
+	}
+
+	const { authUserId } = req.params;
+	if (!authUserId || !UUID_REGEX.test(authUserId)) {
+		return res.status(400).json({ message: 'Valid authUserId is required' });
+	}
+
+	try {
+		await deleteProfileRecord(authUserId);
+		return res.json({ success: true });
+	} catch (error) {
+		console.error('Profiles delete error:', error);
+		return res.status(500).json({ message: 'Failed to delete profile' });
 	}
 });
 
