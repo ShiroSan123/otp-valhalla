@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { Vonage } from '@vonage/server-sdk';
 import { createClient } from '@supabase/supabase-js';
+import QRCode from 'qrcode';
 import { randomUUID } from 'node:crypto';
 
 dotenv.config();
@@ -52,6 +53,116 @@ const supabaseAdmin =
 		: null;
 
 const requestStore = new Map();
+
+function buildQrPayload({ requestId, phone, provider }) {
+	return JSON.stringify({
+		requestId,
+		phone,
+		provider,
+		brand: brandName,
+		generatedAt: new Date().toISOString(),
+	});
+}
+
+async function generateQrDataUrl(payload) {
+	if (!payload) return null;
+	try {
+		return await QRCode.toDataURL(payload, {
+			errorCorrectionLevel: 'M',
+			type: 'image/png',
+			margin: 2,
+			scale: 4,
+		});
+	} catch (error) {
+		console.error('QR code generation error:', error);
+		return null;
+	}
+}
+
+function normalizeDateInput(value) {
+	if (!value) return null;
+	const date = value instanceof Date ? value : new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+async function createOtpRequestRecord(record) {
+	if (!supabaseAdmin) return null;
+
+	const payload = {
+		request_id: record.requestId,
+		phone: record.phone,
+		provider: record.provider,
+		status: record.status ?? 'pending',
+		code: record.code ?? null,
+		qr_payload: record.qrPayload ?? null,
+		qr_data_url: record.qrDataUrl ?? null,
+		expires_at: normalizeDateInput(record.expiresAt),
+		verified_at: normalizeDateInput(record.verifiedAt),
+		metadata: record.metadata ?? {},
+	};
+
+	try {
+		const { error } = await supabaseAdmin
+			.from('otp_requests')
+			.upsert(payload, { onConflict: 'request_id' });
+
+		if (error) {
+			throw error;
+		}
+	} catch (error) {
+		console.error('Supabase store otp request error:', error);
+	}
+}
+
+async function updateOtpRequestRecord(requestId, patch = {}) {
+	if (!supabaseAdmin || !requestId) return null;
+
+	const payload = {};
+	if (patch.status) payload.status = patch.status;
+	if ('code' in patch) payload.code = patch.code ?? null;
+	if ('qrPayload' in patch) payload.qr_payload = patch.qrPayload ?? null;
+	if ('qrDataUrl' in patch) payload.qr_data_url = patch.qrDataUrl ?? null;
+	if ('expiresAt' in patch) payload.expires_at = normalizeDateInput(patch.expiresAt);
+	if ('verifiedAt' in patch) payload.verified_at = normalizeDateInput(patch.verifiedAt);
+	if ('metadata' in patch) payload.metadata = patch.metadata ?? {};
+
+	if (Object.keys(payload).length === 0) return null;
+
+	try {
+		const { error } = await supabaseAdmin
+			.from('otp_requests')
+			.update(payload)
+			.eq('request_id', requestId);
+
+		if (error) {
+			throw error;
+		}
+	} catch (error) {
+		console.error('Supabase update otp request error:', error);
+	}
+}
+
+async function loadRecentOtpRequests(limit = 50) {
+	if (!supabaseAdmin) {
+		throw new Error('Supabase is not configured');
+	}
+
+	const sanitizedLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+
+	const { data, error } = await supabaseAdmin
+		.from('otp_requests')
+		.select(
+			'request_id, phone, provider, status, qr_payload, qr_data_url, created_at, expires_at, verified_at, metadata'
+		)
+		.order('created_at', { ascending: false })
+		.limit(sanitizedLimit);
+
+	if (error) {
+		throw error;
+	}
+
+	return data ?? [];
+}
 
 function normalizePhoneToE164(raw) {
 	if (!raw) return '';
@@ -227,6 +338,33 @@ app.get('/', (_req, res) => {
 </html>`);
 });
 
+app.get('/otp/requests', async (req, res) => {
+	const limitParam = Number(req.query.limit);
+
+	try {
+		const rows = await loadRecentOtpRequests(limitParam);
+		const items = rows.map((row) => ({
+			requestId: row.request_id,
+			phone: row.phone,
+			provider: row.provider,
+			status: row.status,
+			createdAt: row.created_at,
+			expiresAt: row.expires_at,
+			verifiedAt: row.verified_at,
+			metadata: row.metadata ?? {},
+			qr: {
+				payload: row.qr_payload,
+				dataUrl: row.qr_data_url,
+			},
+		}));
+
+		return res.json({ items });
+	} catch (error) {
+		console.error('Load OTP requests error:', error);
+		return res.status(500).json({ message: 'Failed to load OTP requests' });
+	}
+});
+
 app.post('/otp/request', async (req, res) => {
 	const { phone } = req.body;
 
@@ -238,6 +376,8 @@ app.post('/otp/request', async (req, res) => {
 	if (!normalized) {
 		return res.status(400).json({ message: 'invalid phone number' });
 	}
+
+	const expiresAt = Date.now() + OTP_TTL_MS;
 
 	try {
 		if (activeProvider === 'vonage' && vonageConfigured && vonage) {
@@ -254,26 +394,59 @@ app.post('/otp/request', async (req, res) => {
 				});
 			}
 
-			requestStore.set(response.request_id, {
+			const requestId = response.request_id;
+			const qrPayload = buildQrPayload({
+				requestId,
 				phone: normalized,
-				expiresAt: Date.now() + OTP_TTL_MS,
 				provider: 'vonage',
+			});
+			const qrDataUrl = await generateQrDataUrl(qrPayload);
+
+			requestStore.set(requestId, {
+				phone: normalized,
+				expiresAt,
+				provider: 'vonage',
+				qrPayload,
+				qrDataUrl,
+			});
+
+			await createOtpRequestRecord({
+				requestId,
+				phone: normalized,
+				provider: 'vonage',
+				status: 'pending',
+				qrPayload,
+				qrDataUrl,
+				expiresAt: new Date(expiresAt),
+				metadata: { provider: 'vonage', brand: brandName },
 			});
 
 			return res.json({
-				requestId: response.request_id,
+				requestId,
 				expiresIn: OTP_TTL_MS / 1000,
+				qr: {
+					payload: qrPayload,
+					dataUrl: qrDataUrl,
+				},
 			});
 		}
 
 		const requestId = randomUUID();
 		const code = String(Math.floor(100000 + Math.random() * 900000));
+		const qrPayload = buildQrPayload({
+			requestId,
+			phone: normalized,
+			provider: activeProvider,
+		});
+		const qrDataUrl = await generateQrDataUrl(qrPayload);
 
 		requestStore.set(requestId, {
 			phone: normalized,
 			code,
-			expiresAt: Date.now() + OTP_TTL_MS,
+			expiresAt,
 			provider: activeProvider,
+			qrPayload,
+			qrDataUrl,
 		});
 
 		if (activeProvider === 'smsru') {
@@ -282,11 +455,27 @@ app.post('/otp/request', async (req, res) => {
 			console.log(`[OTP MOCK] ${normalized} -> ${code}`);
 		}
 
+		await createOtpRequestRecord({
+			requestId,
+			phone: normalized,
+			provider: activeProvider,
+			status: 'pending',
+			code,
+			qrPayload,
+			qrDataUrl,
+			expiresAt: new Date(expiresAt),
+			metadata: { provider: activeProvider },
+		});
+
 		return res.json({
 			requestId,
 			expiresIn: OTP_TTL_MS / 1000,
 			mock: activeProvider === 'mock',
 			mockCode: activeProvider === 'mock' ? code : undefined,
+			qr: {
+				payload: qrPayload,
+				dataUrl: qrDataUrl,
+			},
 		});
 	} catch (error) {
 		console.error('OTP request error:', error);
@@ -315,6 +504,7 @@ app.post('/otp/verify', async (req, res) => {
 
 	if (meta.expiresAt < Date.now()) {
 		requestStore.delete(requestId);
+		await updateOtpRequestRecord(requestId, { status: 'expired' });
 		return res.status(400).json({ message: 'verification code expired' });
 	}
 
@@ -330,6 +520,10 @@ app.post('/otp/verify', async (req, res) => {
 			}
 
 			requestStore.delete(requestId);
+			await updateOtpRequestRecord(requestId, {
+				status: 'verified',
+				verifiedAt: new Date(),
+			});
 
 			let supabaseUserInfo = null;
 			try {
@@ -351,6 +545,10 @@ app.post('/otp/verify', async (req, res) => {
 		}
 
 		requestStore.delete(requestId);
+		await updateOtpRequestRecord(requestId, {
+			status: 'verified',
+			verifiedAt: new Date(),
+		});
 
 		let supabaseUserInfo = null;
 		try {

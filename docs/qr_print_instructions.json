@@ -1,0 +1,61 @@
+{
+  "qrPrintFlow": {
+    "description": "Сценарий печати: делаем POST /otp/request, получаем QR и печатаем/вшиваем его в бэйдж или наклейку.",
+    "endpoint": "POST /otp/request",
+    "payloadExample": {
+      "phone": "+79991234567"
+    },
+    "responseShape": {
+      "requestId": "uuid",
+      "expiresIn": 300,
+      "mock": false,
+      "qr": {
+        "payload": "{\"requestId\":\"...\",\"phone\":\"+7999...\",\"provider\":\"smsru\",\"brand\":\"Поддержка++\",\"generatedAt\":\"...\"}",
+        "dataUrl": "data:image/png;base64,iVBORw0KGgoAAA..."
+      }
+    },
+    "printSteps": [
+      "Вызываем endpoint с номером телефона.",
+      "Рендерим свойство qr.dataUrl через <img src=\"...\" />, <canvas> или вставляем прямо в PDF/принтер.",
+      "Дублируем requestId/phone рядом текстом для ручной проверки.",
+      "Сохраняем макет и печатаем – QR сканируется стандартными приложениями.",
+      "При необходимости добавляем ссылку на сайт, закодированную в qr.payload."
+    ]
+  },
+  "dashboardFeed": {
+    "description": "Сайт для операторов/админов просто делает GET /otp/requests?limit=50 и показывает список заявок.",
+    "endpoint": "GET /otp/requests?limit=50",
+    "responseShape": {
+      "items": [
+        {
+          "requestId": "uuid",
+          "phone": "+79991234567",
+          "provider": "smsru|vonage|mock",
+          "status": "pending|verified|expired",
+          "createdAt": "2025-11-22T15:22:36.000Z",
+          "expiresAt": "2025-11-22T15:27:36.000Z",
+          "verifiedAt": null,
+          "qr": {
+            "payload": "{...}",
+            "dataUrl": "data:image/png;base64,..."
+          },
+          "metadata": {}
+        }
+      ]
+    },
+    "renderHints": [
+      "pending → серый/желтый, verified → зеленый, expired → красный.",
+      "Показываем таймер до expiresAt и отметку verifiedAt.",
+      "Кнопка «распечатать» просто повторно использует qr.dataUrl."
+    ]
+  },
+  "supabase": {
+    "migration": "supabase/migrations/20251122152236_create_otp_requests_table.sql",
+    "table": "otp_requests",
+    "notes": [
+      "service_role ключа достаточно – API пишет/читает записи и прикручивает QR.",
+      "Если нужно отдавать список на фронт без backend, добавьте RLS-политику на SELECT по конкретной роли или создайте view.",
+      "Колонки qr_payload и qr_data_url сохраняют контент, который можно переиспользовать для печати или аудита."
+    ]
+  }
+}
