@@ -43,14 +43,16 @@ const supabaseUrl =
 	process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const supabaseClientOptions = {
+	auth: {
+		autoRefreshToken: false,
+		persistSession: false,
+	},
+};
+
 const supabaseAdmin =
 	supabaseUrl && supabaseServiceKey
-		? createClient(supabaseUrl, supabaseServiceKey, {
-			auth: {
-				autoRefreshToken: false,
-				persistSession: false,
-			},
-		})
+		? createClient(supabaseUrl, supabaseServiceKey, supabaseClientOptions)
 		: null;
 
 const requestStore = new Map();
@@ -210,16 +212,48 @@ function normalizePhoneToE164(raw) {
 	return `+${digits}`;
 }
 
+function normalizePhoneDigits(value) {
+	if (!value) return '';
+	return value.toString().replace(/\D/g, '');
+}
+
 const OTP_TTL_MS = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
+
+function identityHasPhone(user, phone, normalizedTarget) {
+	if (!user.identities) return false;
+	const targetDigits = normalizedTarget ?? normalizePhoneDigits(phone);
+
+	return user.identities.some((ident) => {
+		const data = ident.identity_data || {};
+
+		const candidateValues = [
+			data.phone,
+			data.phone_number,
+			data.phoneNumber,
+			data.sub,
+		];
+
+		return (
+			candidateValues.some((candidate) => candidate && candidate === phone) ||
+			candidateValues.some((candidate) => {
+				const candidateDigits = normalizePhoneDigits(candidate);
+				return (
+					candidateDigits &&
+					targetDigits &&
+					candidateDigits === targetDigits
+				);
+			})
+		);
+	});
+}
 
 async function findSupabaseUserByPhone(phone) {
 	if (!supabaseAdmin) return null;
+	const normalizedPhoneDigits = normalizePhoneDigits(phone);
 
 	let page = 1;
 	const perPage = 200;
 
-	// paginate through users until we find a match or exhaust the list
-	// для тестового проекта такого перебора достаточно
 	while (true) {
 		const { data, error } = await supabaseAdmin.auth.admin.listUsers({
 			page,
@@ -231,11 +265,32 @@ async function findSupabaseUserByPhone(phone) {
 		}
 
 		const users = data?.users ?? [];
-		const match = users.find((user) => user.phone === phone);
-		if (match) return match;
+
+		const match = users.find((user) => {
+			if (user.phone && user.phone === phone) {
+				return true;
+			}
+
+			const userPhoneDigits = normalizePhoneDigits(user.phone);
+			if (
+				userPhoneDigits &&
+				normalizedPhoneDigits &&
+				userPhoneDigits === normalizedPhoneDigits
+			) {
+				return true;
+			}
+
+			return identityHasPhone(user, phone, normalizedPhoneDigits);
+		});
+
+		if (match) {
+			return match;
+		}
 
 		const hasMore =
-			typeof data?.nextPage === 'number' && data.nextPage > page && users.length > 0;
+			typeof data?.nextPage === 'number' &&
+			data.nextPage > page &&
+			users.length > 0;
 
 		if (!hasMore || users.length === 0) {
 			break;
@@ -247,6 +302,7 @@ async function findSupabaseUserByPhone(phone) {
 	return null;
 }
 
+
 async function ensureSupabaseUser(phone) {
 	if (!supabaseAdmin) {
 		return null;
@@ -257,17 +313,32 @@ async function ensureSupabaseUser(phone) {
 		return { userId: existing.id, created: false };
 	}
 
-	const { data, error } = await supabaseAdmin.auth.admin.createUser({
-		phone,
-		phone_confirm: true,
-	});
+	try {
+		const { data, error } = await supabaseAdmin.auth.admin.createUser({
+			phone,
+			phone_confirm: true,
+		});
 
-	if (error) {
+		if (error) {
+			throw error;
+		}
+
+		return { userId: data.user?.id ?? null, created: true };
+	} catch (error) {
+		if (
+			error &&
+			typeof error === 'object' &&
+			(error.code === 'phone_exists' || error.message?.includes('Phone number already registered'))
+		) {
+			const user = await findSupabaseUserByPhone(phone);
+			if (user) {
+				return { userId: user.id, created: false };
+			}
+		}
 		throw error;
 	}
-
-	return { userId: data.user?.id ?? null, created: true };
 }
+
 
 async function sendSmsRuCode(phone, code) {
 	if (!smsRuConfigured || !smsRuApiId) {
@@ -1186,6 +1257,7 @@ app.post('/otp/request', async (req, res) => {
 });
 
 app.post('/otp/verify', async (req, res) => {
+	console.log('[/otp/verify] body =', req.body);
 	const { requestId, code } = req.body;
 
 	if (!requestId || !code) {
