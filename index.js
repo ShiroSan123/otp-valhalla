@@ -13,7 +13,7 @@ const app = express();
 const port = process.env.OTP_SERVER_PORT || 4000;
 const clientOrigin = process.env.CLIENT_ORIGIN || '*';
 const brandName = process.env.OTP_BRAND_NAME || 'Поддержка++';
-const requestPayloadLimit = process.env.OTP_REQUEST_LIMIT || '15mb';
+const requestPayloadLimit = process.env.OTP_REQUEST_LIMIT || '40mb';
 
 app.use(
 	cors({
@@ -781,7 +781,7 @@ app.get('/print', (_req, res) => {
 		const now = new Date();
 		const isoNow = now.toISOString();
 		const digits = (phoneValue || '').replace(/[^\d]/g, '');
-		const profileId = digits ? `print-${digits.slice(-6)}` : 'print-user';
+		const profileId = digits ? 'print-' + digits.slice(-6) : 'print-user';
 		return {
 			generatedAt: isoNow,
 			printDateLabel: now.toLocaleString('ru-RU', {
@@ -895,7 +895,7 @@ app.get('/print', (_req, res) => {
 		}
 		if (!parsed.profile.id) {
 			const digits = (phoneValue || '').replace(/[^\d]/g, '');
-			parsed.profile.id = digits ? `print-${digits.slice(-6)}` : 'print-user';
+			parsed.profile.id = digits ? 'print-' + digits.slice(-6) : 'print-user';
 		}
 		return parsed;
 	}
