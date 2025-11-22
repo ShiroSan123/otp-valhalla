@@ -182,6 +182,51 @@ app.get('/health', (_req, res) => {
 	});
 });
 
+app.get('/', (_req, res) => {
+	res.type('html').send(`<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OTP Valhalla</title>
+<style>
+	body {
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+		margin: 0;
+		padding: 32px;
+		background: #0c111d;
+		color: #fff;
+	}
+	a {
+		color: #a5d8ff;
+	}
+	code {
+		background: rgba(255, 255, 255, 0.08);
+		padding: 2px 4px;
+		border-radius: 4px;
+	}
+	section {
+		max-width: 720px;
+		line-height: 1.5;
+	}
+</style>
+</head>
+<body>
+<section>
+	<h1>OTP Valhalla API</h1>
+	<p>Сервис ожидает POST-запросы от клиента Hack-the-ICE 7.0.</p>
+	<p>Основные конечные точки:</p>
+	<ul>
+		<li><code>POST /otp/request</code> — отправить SMS-код. Тело: <code>{"{ "phone": "+7..." }"}</code>.</li>
+		<li><code>POST /otp/verify</code> — подтвердить код. Тело: <code>{"{ "requestId": "...", "code": "123456" }"}</code>.</li>
+		<li><code>GET /health</code> — статус API.</li>
+	</ul>
+	<p>Базовый URL задаётся переменной <code>VITE_OTP_API_URL</code> во фронтенде.</p>
+</section>
+</body>
+</html>`);
+});
+
 app.post('/otp/request', async (req, res) => {
 	const { phone } = req.body;
 
