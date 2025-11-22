@@ -323,17 +323,27 @@ app.get('/', (_req, res) => {
 </style>
 </head>
 <body>
-<section>
-	<h1>OTP Valhalla API</h1>
-	<p>Сервис ожидает POST-запросы от клиента Hack-the-ICE 7.0.</p>
-	<p>Основные конечные точки:</p>
-	<ul>
-		<li><code>POST /otp/request</code> — отправить SMS-код. Тело: <code>{"{ "phone": "+7..." }"}</code>.</li>
-		<li><code>POST /otp/verify</code> — подтвердить код. Тело: <code>{"{ "requestId": "...", "code": "123456" }"}</code>.</li>
-		<li><code>GET /health</code> — статус API.</li>
-	</ul>
-	<p>Базовый URL задаётся переменной <code>VITE_OTP_API_URL</code> во фронтенде.</p>
-</section>
+	<section>
+		<h1>OTP Valhalla API</h1>
+		<p>Сервис ожидает POST-запросы от клиента Hack-the-ICE 7.0.</p>
+		<p>Основные конечные точки:</p>
+		<ul>
+			<li><code>POST /otp/request</code> — отправить SMS-код. Тело: <code>{"{ "phone": "+7..." }"}</code>.</li>
+			<li><code>POST /otp/verify</code> — подтвердить код. Тело: <code>{"{ "requestId": "...", "code": "123456" }"}</code>.</li>
+			<li><code>GET /health</code> — статус API.</li>
+			<li><code>GET /otp/requests</code> — список последних заявок с QR для печати.</li>
+		</ul>
+		<h2>Что можно просить</h2>
+		<p>Когда вы стучитесь в API или к печатникам, формулируйте запросы конкретно:</p>
+		<ol>
+			<li><strong>QR для печати.</strong> Просите <code>POST /otp/request</code>, укажите телефон получателя. В ответе придёт блок <code>qr</code> с JSON и изображением <code>dataUrl</code> — его можно сразу печатать.</li>
+			<li><strong>Список активных заявок.</strong> Просите <code>GET /otp/requests?limit=50</code>, чтобы показать на сайте статус, срок действия и QR коды, которые ещё можно отсканировать.</li>
+			<li><strong>Проверка статуса.</strong> Если нужен только аптайм, достаточно вызвать <code>GET /health</code> и убедиться, что провайдер в норме.</li>
+			<li><strong>Верификация.</strong> После того как пользователь назвал код, делайте <code>POST /otp/verify</code> c <code>requestId</code> и <code>code</code>, чтобы завершить поток.</li>
+		</ol>
+		<p>Бэйджи или операторы могут давать только эти четыре типа запросов; все остальные функции закрыты.</p>
+		<p>Базовый URL задаётся переменной <code>VITE_OTP_API_URL</code> во фронтенде.</p>
+	</section>
 </body>
 </html>`);
 });
