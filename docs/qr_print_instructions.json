@@ -3,7 +3,35 @@
     "description": "Сценарий печати: делаем POST /otp/request, получаем QR и печатаем/вшиваем его в бэйдж или наклейку.",
     "endpoint": "POST /otp/request",
     "payloadExample": {
-      "phone": "+79991234567"
+      "phone": "+79991234567",
+      "report": {
+        "profile": {
+          "id": "profile-uuid",
+          "name": "Пользователь",
+          "region": "xxxxxxxxx"
+        },
+        "stats": {
+          "benefitsCount": 96,
+          "medicinesCount": 3
+        },
+        "benefits": [
+          {
+            "id": "benefit-1",
+            "title": "Бесплатный проезд",
+            "requirements": [
+              "Паспорт",
+              "Удостоверение"
+            ]
+          }
+        ],
+        "medicines": [
+          {
+            "id": "med-1",
+            "name": "Эналаприл",
+            "dosage": "10 мг"
+          }
+        ]
+      }
     },
     "responseShape": {
       "requestId": "uuid",
@@ -12,7 +40,8 @@
       "qr": {
         "payload": "{\"requestId\":\"...\",\"phone\":\"+7999...\",\"provider\":\"smsru\",\"brand\":\"Поддержка++\",\"generatedAt\":\"...\"}",
         "dataUrl": "data:image/png;base64,iVBORw0KGgoAAA..."
-      }
+      },
+      "reportCaptured": true
     },
     "printSteps": [
       "Вызываем endpoint с номером телефона.",
@@ -26,7 +55,8 @@
       "notes": [
         "HTML-страница в otp-valhalla, вызывающая POST /otp/request и сразу показывающая QR.",
         "После ввода телефона можно распечатать QR напрямую из браузера — в макет попадают phone, requestId и расшифрованный payload.",
-        "Поддерживается авто-переключение светлой/тёмной темы и кнопка «Печать» блокируется до получения данных."
+        "Поддерживается авто-переключение светлой/тёмной темы и кнопка «Печать» блокируется до получения данных.",
+        "Форма прикладывает полный JSON-отчёт (benefits, medicines, агрегаты) в поле report — он сохраняется в metadata."
       ]
     }
   },
@@ -63,7 +93,8 @@
     "notes": [
       "service_role ключа достаточно – API пишет/читает записи и прикручивает QR.",
       "Если нужно отдавать список на фронт без backend, добавьте RLS-политику на SELECT по конкретной роли или создайте view.",
-      "Колонки qr_payload и qr_data_url сохраняют контент, который можно переиспользовать для печати или аудита."
+      "Колонки qr_payload и qr_data_url сохраняют контент, который можно переиспользовать для печати или аудита.",
+      "Поле metadata теперь содержит объект { provider, brand, report }, где report повторяет данные страницы печати."
     ]
   }
 }

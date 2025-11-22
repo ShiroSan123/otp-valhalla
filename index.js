@@ -13,13 +13,14 @@ const app = express();
 const port = process.env.OTP_SERVER_PORT || 4000;
 const clientOrigin = process.env.CLIENT_ORIGIN || '*';
 const brandName = process.env.OTP_BRAND_NAME || 'Поддержка++';
+const requestPayloadLimit = process.env.OTP_REQUEST_LIMIT || '15mb';
 
 app.use(
 	cors({
 		origin: clientOrigin === '*' ? '*' : clientOrigin.split(',').map((origin) => origin.trim()),
 	})
 );
-app.use(express.json());
+app.use(express.json({ limit: requestPayloadLimit }));
 
 const vonageApiKey = process.env.VONAGE_API_KEY;
 const vonageApiSecret = process.env.VONAGE_API_SECRET;
@@ -92,6 +93,19 @@ function normalizeDateInput(value) {
 	if (!value) return null;
 	const date = value instanceof Date ? value : new Date(value);
 	return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function sanitizeReportMetadata(report) {
+	if (!report || typeof report !== 'object') {
+		return null;
+	}
+
+	try {
+		return JSON.parse(JSON.stringify(report));
+	} catch (error) {
+		console.error('Failed to sanitize report metadata:', error);
+		return null;
+	}
 }
 
 async function createOtpRequestRecord(record) {
@@ -432,6 +446,31 @@ app.get('/print', (_req, res) => {
 	body.dark label span {
 		color: rgba(248, 250, 252, 0.7);
 	}
+	.label-title {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		font-size: 0.9rem;
+		color: rgba(15, 23, 42, 0.85);
+		margin-bottom: 4px;
+	}
+	body.dark .label-title {
+		color: rgba(248, 250, 252, 0.75);
+	}
+	.link-btn {
+		margin-left: auto;
+		border: none;
+		background: none;
+		padding: 0;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: #2563eb;
+		cursor: pointer;
+	}
+	.link-btn:hover {
+		text-decoration: underline;
+	}
 	input[type="tel"] {
 		font-size: 1.2rem;
 		padding: 12px 14px;
@@ -444,6 +483,27 @@ app.get('/print', (_req, res) => {
 		border-color: rgba(248, 250, 252, 0.2);
 		background: rgba(248, 250, 252, 0.05);
 		color: inherit;
+	}
+	textarea {
+		width: 100%;
+		min-height: 160px;
+		padding: 12px 14px;
+		border-radius: 12px;
+		border: 1px solid rgba(15, 23, 42, 0.2);
+		background: rgba(15, 23, 42, 0.02);
+		color: inherit;
+		font-family: 'SFMono-Regular', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+		font-size: 0.85rem;
+		line-height: 1.4;
+		resize: vertical;
+	}
+	body.dark textarea {
+		border-color: rgba(248, 250, 252, 0.2);
+		background: rgba(248, 250, 252, 0.05);
+		color: inherit;
+	}
+	#qr-payload {
+		min-height: 220px;
 	}
 	.actions {
 		display: flex;
@@ -596,6 +656,14 @@ app.get('/print', (_req, res) => {
 			<span>Номер телефона (E.164)</span>
 			<input id="phone" type="tel" name="phone" placeholder="+79991234567" pattern="^\\+?\\d{11,15}$" required />
 		</label>
+		<label>
+			<span class="label-title">
+				JSON-отчёт (можно отредактировать перед отправкой)
+				<button type="button" class="link-btn" id="report-reset-btn">Заполнить примером</button>
+			</span>
+			<textarea id="report-json" name="report" rows="10" spellcheck="false" placeholder='{"profile":{"name":"Пользователь"}}'></textarea>
+			<p class="hint">Данные попадут в поле <code>report</code> и сохранятся в metadata Supabase.</p>
+		</label>
 		<div class="actions">
 			<button class="primary" type="submit" id="generate-btn">Сгенерировать QR</button>
 			<button class="secondary" type="button" data-action="print" disabled>Печать</button>
@@ -634,6 +702,10 @@ app.get('/print', (_req, res) => {
 					<span>Бренд</span>
 					<strong>${safeBrandName}</strong>
 				</div>
+				<div>
+					<span>JSON-отчёт</span>
+					<strong id="meta-report-status">—</strong>
+				</div>
 			</div>
 		</div>
 		<div class="card">
@@ -665,13 +737,16 @@ app.get('/print', (_req, res) => {
 	const resultSection = document.getElementById('result');
 	const qrImage = document.getElementById('qr-image');
 	const payloadField = document.getElementById('qr-payload');
+	const reportField = document.getElementById('report-json');
 	const metaPhone = document.getElementById('meta-phone');
 	const metaRequestId = document.getElementById('meta-request-id');
 	const metaExpires = document.getElementById('meta-expires');
 	const metaGenerated = document.getElementById('meta-generated');
 	const metaProvider = document.getElementById('meta-provider');
+	const metaReportStatus = document.getElementById('meta-report-status');
 	const printButton = document.querySelector('[data-action="print"]');
 	const submitButton = document.getElementById('generate-btn');
+	const resetReportButton = document.getElementById('report-reset-btn');
 	const defaultSubmitText = submitButton.textContent;
 
 	function setLoading(isLoading) {
@@ -702,11 +777,152 @@ app.get('/print', (_req, res) => {
 		return date.toLocaleString('ru-RU', { hour12: false });
 	}
 
+	function buildSampleReport(phoneValue) {
+		const now = new Date();
+		const isoNow = now.toISOString();
+		const digits = (phoneValue || '').replace(/[^\d]/g, '');
+		const profileId = digits ? `print-${digits.slice(-6)}` : 'print-user';
+		return {
+			generatedAt: isoNow,
+			printDateLabel: now.toLocaleString('ru-RU', {
+				day: '2-digit',
+				month: 'long',
+				year: 'numeric',
+				hour: '2-digit',
+				minute: '2-digit',
+			}),
+			profile: {
+				id: profileId,
+				name: 'Пользователь',
+				region: 'Москва',
+				category: 'pensioner',
+			},
+			stats: {
+				benefitsCount: 2,
+				totalBenefitSavings: 12500,
+				medicinesCount: 1,
+				totalMedicineCost: 1800,
+			},
+			soonExpiring: {
+				id: 'benefit-urgent',
+				title: 'Компенсация ЖКУ',
+				expiresIn: 12,
+				validTo: null,
+			},
+			benefits: [
+				{
+					id: 'benefit-1',
+					title: 'Бесплатный проезд',
+					description: 'Компенсация поездок на городском транспорте.',
+					type: 'transport',
+					targetGroups: ['pensioner'],
+					regions: ['Москва', 'all'],
+					validFrom: isoNow,
+					validTo: null,
+					requirements: ['Паспорт', 'Социальная карта москвича'],
+					documents: ['Заявление в МФЦ', 'Удостоверение льготника'],
+					steps: [
+						'Подайте заявление в МФЦ или на Госуслугах',
+						'Дождитесь уведомления',
+						'Получите подтверждение и обновите карту',
+					],
+					partner: 'Департамент транспорта',
+					savingsPerMonth: 2200,
+					expiresIn: 120,
+				},
+				{
+					id: 'benefit-2',
+					title: 'Скидка на ЖКУ',
+					description: 'Компенсация 50% расходов на коммунальные услуги.',
+					type: 'utility',
+					targetGroups: ['pensioner'],
+					regions: ['Москва', 'all'],
+					validFrom: isoNow,
+					validTo: null,
+					requirements: ['Регистрация в регионе', 'Отсутствие задолженности'],
+					documents: ['Паспорт', 'Справка о составе семьи'],
+					steps: ['Соберите документы', 'Подайте заявление в соцзащиту', 'Получите перечисление'],
+					partner: 'МФЦ Москва',
+					savingsPerMonth: 5300,
+					expiresIn: 45,
+				},
+			],
+			medicines: [
+				{
+					id: 'medicine-1',
+					name: 'Эналаприл',
+					dosage: '10 мг',
+					frequency: '2 раза в день',
+					prescribedBy: 'Терапевт',
+					prescribedDate: isoNow,
+					refillDate: isoNow,
+					monthlyPrice: 980,
+					discountedPrice: 0,
+				},
+			],
+		};
+	}
+
+	function resetReportField(phoneValue) {
+		if (!reportField) return;
+		const sample = buildSampleReport(phoneValue || phoneInput.value.trim() || '+79991234567');
+		reportField.value = JSON.stringify(sample, null, 2);
+	}
+
+	function getReportPayload(phoneValue) {
+		if (!reportField) return null;
+		const raw = reportField.value.trim();
+		if (!raw) return null;
+		let parsed;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (parseError) {
+			throw new Error('Проверьте JSON отчёта — не удалось распарсить данные.');
+		}
+		const now = new Date();
+		parsed.generatedAt = now.toISOString();
+		if (!parsed.printDateLabel) {
+			parsed.printDateLabel = now.toLocaleString('ru-RU', {
+				day: '2-digit',
+				month: 'long',
+				year: 'numeric',
+				hour: '2-digit',
+				minute: '2-digit',
+			});
+		}
+		if (!parsed.profile || typeof parsed.profile !== 'object') {
+			parsed.profile = {};
+		}
+		if (!parsed.profile.id) {
+			const digits = (phoneValue || '').replace(/[^\d]/g, '');
+			parsed.profile.id = digits ? `print-${digits.slice(-6)}` : 'print-user';
+		}
+		return parsed;
+	}
+
+	if (reportField && !reportField.value.trim()) {
+		resetReportField();
+	}
+	if (resetReportButton) {
+		resetReportButton.addEventListener('click', (event) => {
+			event.preventDefault();
+			resetReportField();
+		});
+	}
+
 	form.addEventListener('submit', async (event) => {
 		event.preventDefault();
 		const phone = phoneInput.value.trim();
 		if (!phone) {
 			showError('Введите номер телефона');
+			return;
+		}
+
+		let reportPayload = null;
+		try {
+			reportPayload = getReportPayload(phone);
+		} catch (reportError) {
+			showError(reportError && reportError.message ? reportError.message : 'Невалидный JSON отчёта');
 			return;
 		}
 
@@ -716,10 +932,11 @@ app.get('/print', (_req, res) => {
 		setLoading(true);
 
 		try {
+			const payload = reportPayload ? { phone, report: reportPayload } : { phone };
 			const response = await fetch('/otp/request', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ phone }),
+				body: JSON.stringify(payload),
 			});
 			const data = await response.json();
 			if (!response.ok) {
@@ -764,6 +981,19 @@ app.get('/print', (_req, res) => {
 				metaProvider.textContent = 'mock';
 			} else {
 				metaProvider.textContent = '—';
+			}
+			if (metaReportStatus) {
+				if (typeof data.reportCaptured === 'boolean') {
+					metaReportStatus.textContent = data.reportCaptured
+						? 'Сохранён'
+						: reportPayload
+							? 'Не сохранён'
+							: '—';
+				} else if (reportPayload) {
+					metaReportStatus.textContent = 'Отправлен';
+				} else {
+					metaReportStatus.textContent = '—';
+				}
 			}
 
 			resultSection.hidden = false;
@@ -815,7 +1045,7 @@ app.get('/otp/requests', async (req, res) => {
 });
 
 app.post('/otp/request', async (req, res) => {
-	const { phone } = req.body;
+	const { phone, report } = req.body;
 
 	if (!phone) {
 		return res.status(400).json({ message: 'phone is required' });
@@ -826,6 +1056,7 @@ app.post('/otp/request', async (req, res) => {
 		return res.status(400).json({ message: 'invalid phone number' });
 	}
 
+	const sanitizedReportMetadata = sanitizeReportMetadata(report);
 	const expiresAt = Date.now() + OTP_TTL_MS;
 
 	try {
@@ -859,6 +1090,14 @@ app.post('/otp/request', async (req, res) => {
 				qrDataUrl,
 			});
 
+			const recordMetadata = {
+				provider: 'vonage',
+				brand: brandName,
+			};
+			if (sanitizedReportMetadata) {
+				recordMetadata.report = sanitizedReportMetadata;
+			}
+
 			await createOtpRequestRecord({
 				requestId,
 				phone: normalized,
@@ -867,12 +1106,13 @@ app.post('/otp/request', async (req, res) => {
 				qrPayload,
 				qrDataUrl,
 				expiresAt: new Date(expiresAt),
-				metadata: { provider: 'vonage', brand: brandName },
+				metadata: recordMetadata,
 			});
 
 			return res.json({
 				requestId,
 				expiresIn: OTP_TTL_MS / 1000,
+				reportCaptured: Boolean(sanitizedReportMetadata),
 				qr: {
 					payload: qrPayload,
 					dataUrl: qrDataUrl,
@@ -904,6 +1144,11 @@ app.post('/otp/request', async (req, res) => {
 			console.log(`[OTP MOCK] ${normalized} -> ${code}`);
 		}
 
+		const recordMetadata = { provider: activeProvider, brand: brandName };
+		if (sanitizedReportMetadata) {
+			recordMetadata.report = sanitizedReportMetadata;
+		}
+
 		await createOtpRequestRecord({
 			requestId,
 			phone: normalized,
@@ -913,7 +1158,7 @@ app.post('/otp/request', async (req, res) => {
 			qrPayload,
 			qrDataUrl,
 			expiresAt: new Date(expiresAt),
-			metadata: { provider: activeProvider },
+			metadata: recordMetadata,
 		});
 
 		return res.json({
@@ -921,6 +1166,7 @@ app.post('/otp/request', async (req, res) => {
 			expiresIn: OTP_TTL_MS / 1000,
 			mock: activeProvider === 'mock',
 			mockCode: activeProvider === 'mock' ? code : undefined,
+			reportCaptured: Boolean(sanitizedReportMetadata),
 			qr: {
 				payload: qrPayload,
 				dataUrl: qrDataUrl,
