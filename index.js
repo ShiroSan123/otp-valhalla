@@ -70,14 +70,118 @@ function escapeHtml(value) {
 		.replace(/'/g, '&#39;');
 }
 
-function buildQrPayload({ requestId, phone, provider }) {
-	return JSON.stringify({
+function calculateAgeFromBirthYear(birthYear) {
+	if (typeof birthYear !== 'number') return null;
+	const currentYear = new Date().getFullYear();
+	if (birthYear < 1900 || birthYear > currentYear) return null;
+	return currentYear - birthYear;
+}
+
+function buildQrProfileSnapshot(report) {
+	if (!report || typeof report !== 'object') return null;
+
+	const profile =
+		report && typeof report === 'object' && report.profile && typeof report.profile === 'object'
+			? report.profile
+			: {};
+
+	const age =
+		typeof profile.age === 'number'
+			? profile.age
+			: calculateAgeFromBirthYear(profile.birthYear);
+
+	const snapshot = {
+		fullName: profile.name ?? null,
+		region: profile.region ?? null,
+		category: profile.category ?? null,
+		age: age ?? null,
+	};
+
+	if ('birthYear' in profile && typeof profile.birthYear === 'number') {
+		snapshot.birthYear = profile.birthYear;
+	}
+
+	if (Object.values(snapshot).every((value) => value === null)) {
+		return null;
+	}
+
+	return snapshot;
+}
+
+function buildQrCareSummary(report) {
+	if (!report || typeof report !== 'object') return null;
+
+	const benefits = Array.isArray(report.benefits)
+		? report.benefits
+			.slice(0, 5)
+			.map((benefit) => ({
+				title: benefit?.title ?? null,
+				type: benefit?.type ?? null,
+				expiresIn: benefit?.expiresIn ?? null,
+			}))
+			.filter((benefit) => benefit.title)
+		: [];
+
+	const medicines = Array.isArray(report.medicines)
+		? report.medicines
+			.slice(0, 8)
+			.map((medicine) => ({
+				name: medicine?.name ?? null,
+				dosage: medicine?.dosage ?? null,
+				frequency: medicine?.frequency ?? null,
+			}))
+			.filter((medicine) => medicine.name)
+		: [];
+
+	const benefitsCount =
+		typeof report?.stats?.benefitsCount === 'number'
+			? report.stats.benefitsCount
+			: benefits.length;
+	const medicinesCount =
+		typeof report?.stats?.medicinesCount === 'number'
+			? report.stats.medicinesCount
+			: medicines.length;
+
+	const summary = {};
+	if (benefits.length) summary.benefits = benefits;
+	if (medicines.length) summary.medicines = medicines;
+	if (typeof benefitsCount === 'number') summary.benefitsCount = benefitsCount;
+	if (typeof medicinesCount === 'number')
+		summary.medicinesCount = medicinesCount;
+
+	if (
+		!summary.benefits &&
+		!summary.medicines &&
+		typeof summary.benefitsCount !== 'number' &&
+		typeof summary.medicinesCount !== 'number'
+	) {
+		return null;
+	}
+
+	return summary;
+}
+
+function buildQrPayload({ requestId, phone, provider, report }) {
+	const payload = {
 		requestId,
 		phone,
 		provider,
 		brand: brandName,
 		generatedAt: new Date().toISOString(),
-	});
+	};
+
+	const profileSnapshot = buildQrProfileSnapshot(report);
+	const careSummary = buildQrCareSummary(report);
+
+	if (profileSnapshot) {
+		payload.profile = profileSnapshot;
+	}
+
+	if (careSummary) {
+		payload.care = careSummary;
+	}
+
+	return JSON.stringify(payload);
 }
 
 async function generateQrDataUrl(payload) {
@@ -1332,6 +1436,7 @@ app.post('/otp/request', async (req, res) => {
 				requestId,
 				phone: normalized,
 				provider: 'vonage',
+				report: sanitizedReportMetadata,
 			});
 			const qrDataUrl = await generateQrDataUrl(qrPayload);
 
@@ -1379,6 +1484,7 @@ app.post('/otp/request', async (req, res) => {
 			requestId,
 			phone: normalized,
 			provider: activeProvider,
+			report: sanitizedReportMetadata,
 		});
 		const qrDataUrl = await generateQrDataUrl(qrPayload);
 
